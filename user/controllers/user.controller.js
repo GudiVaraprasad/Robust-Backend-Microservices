@@ -1,18 +1,20 @@
+// Import required modules and models
 const userModel = require('../models/user.model');
 const blacklisttokenModel = require('../models/blacklisttoken.model');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const { subscribeToQueue } = require('../service/rabbit');
+const EventEmitter = require('events');
+const rideEventEmitter = new EventEmitter();
 
-
+// Register a new user
 module.exports.register = async (req, res) => {
     try {
         const { name, email, password } = req.body;
         const user = await userModel.findOne({ email });
 
         if (user) {
-            return res.status(400).json({
-                message: `User ${user.username || user.email || user.id} already exists`,
-            });
+            return res.status(400).json({ message: 'User already exists' });
         }
 
         const hash = await bcrypt.hash(password, 10);
@@ -23,7 +25,8 @@ module.exports.register = async (req, res) => {
         const token = jwt.sign({ id: newUser._id }, process.env.JWT_SECRET, { expiresIn: '1h' });
 
         res.cookie('token', token);
-        delete user._doc.password;
+
+        delete newUser._doc.password;
 
         res.send({ token, newUser });
     } catch (error) {
@@ -31,61 +34,50 @@ module.exports.register = async (req, res) => {
     }
 }
 
+// Login an existing user
 module.exports.login = async (req, res) => {
     try {
         const { email, password } = req.body;
-
-        // Find user by email and include the password field for validation
         const user = await userModel
             .findOne({ email })
             .select('+password');
 
         if (!user) {
-            return res.status(400).json({ message: `User with email ${email} not found` });
+            return res.status(400).json({ message: 'Invalid email or password' });
         }
 
-        // Compare password
         const isMatch = await bcrypt.compare(password, user.password);
+
         if (!isMatch) {
-            return res.status(400).json({ message: 'Invalid credentials' });
+            return res.status(400).json({ message: 'Invalid email or password' });
         }
 
-        // Generate JWT
         const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '1h' });
 
         delete user._doc.password;
 
-        // Set the JWT as an HTTP-only cookie
-        res.cookie('token', token, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: 'strict',
-        });
+        res.cookie('token', token);
 
-        // Respond with success message and token (if required)
-        return res.status(200).json({
-            message: `User ${user.username || user.email} logged in successfully`,
-            token, // Optionally include the token
-            user,
-        });
+        res.send({ token, user });
 
-    } catch (error) {
-        // Handle unexpected errors
-        return res.status(500).json({ message: error.message });
-    }
-};
-
-module.exports.logout = async (req, res) => {
-    try {
-        const token = req.cookies.token;
-        await blacklisttokenModel.create({ token });
-        res.clearCookie('token');
-        res.send({ message: `User ${user.username || user.email || user.id} logged out successfully` });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
 }
 
+// Logout a user
+module.exports.logout = async (req, res) => {
+    try {
+        const token = req.cookies.token;
+        await blacklisttokenModel.create({ token });
+        res.clearCookie('token');
+        res.send({ message: 'User logged out successfully' });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+}
+
+// Get the profile of the logged-in user
 module.exports.profile = async (req, res) => {
     try {
         res.send(req.user);
@@ -93,3 +85,22 @@ module.exports.profile = async (req, res) => {
         res.status(500).json({ message: error.message });
     }
 }
+
+// Handle accepted ride event with long polling
+module.exports.acceptedRide = async (req, res) => {
+    // Long polling: wait for 'ride-accepted' event
+    rideEventEmitter.once('ride-accepted', (data) => {
+        res.send(data);
+    });
+
+    // Set timeout for long polling (e.g., 30 seconds)
+    setTimeout(() => {
+        res.status(204).send();
+    }, 30000);
+}
+
+// Subscribe to 'ride-accepted' queue and emit event
+subscribeToQueue('ride-accepted', async (msg) => {
+    const data = JSON.parse(msg);
+    rideEventEmitter.emit('ride-accepted', data);
+});
