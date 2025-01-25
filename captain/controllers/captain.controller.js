@@ -94,7 +94,7 @@ module.exports.profile = async (req, res) => {
     }
 }
 
-module.exports.toggleAvailability = async (req, res) => {
+module.exports.online = async (req, res) => {
     try {
         const captain = await captainModel.findById(req.captain._id);
         captain.isAvailable = !captain.isAvailable;
